@@ -129,14 +129,14 @@ class Tf2OnnxInternalTests(unittest.TestCase):
             input_node = match.get_op('input')
             output_node = match.get_op('output')
             op_name = tf2onnx.utils.make_name("ReplacedOp")
-            out_name = output_name(op_name, 0)
+            out_name = tf2onnx.utils.output_name(op_name, 0)
             new_node = Node(helper.make_node("Sub", input_node.input, [out_name], name=op_name), g)
             ops = g.replace_subgraph(ops, match, [], [output_node], [], [new_node])
         g.topological_sort(ops)
         result = onnx_to_graphviz(g)
-        expected = 'digraph { n1 [op_type=Abs] n3 [op_type=Abs] n2 [op_type=Abs] ReplacedOp__2 [op_type=Sub] ' \
-                   'n6 [op_type=Identity] input -> n1 n1:0 -> n3 n1:0 -> n2 n2:0 -> ReplacedOp__2 ' \
-                   'n3:0 -> ReplacedOp__2 ReplacedOp__2:0 -> n6 }'
+        expected = 'digraph { n1 [op_type=Abs] n3 [op_type=Abs] n2 [op_type=Abs] ReplacedOp___2 [op_type=Sub] ' \
+                   'n6 [op_type=Identity] input -> n1 n1:0 -> n3 n1:0 -> n2 n2:0 -> ReplacedOp___2 ' \
+                   'n3:0 -> ReplacedOp___2 ReplacedOp___2:0 -> n6 }'
         self.assertEqual(expected, result)
 
     def test_match_flipped(self):
