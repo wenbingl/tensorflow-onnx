@@ -270,7 +270,9 @@ class Graph(object):
     def set_nodes(self, ops):
         """Set new node list."""
         self._nodes = ops
-        self._nodes_by_name = {op.name: op for op in ops}
+        self._nodes_by_name = {}
+        for op in ops:
+            self.set_node_by_name(op)
 
     def update_proto(self):
         """Update the onnx protobuf from out internal Node structure."""
@@ -283,14 +285,13 @@ class Graph(object):
 
     def get_node_by_name(self, name):
         """Get node by name."""
-        ret = self._nodes_by_name.get(name)
-        if not ret and name:
-            ret = self._nodes_by_name.get(node_name(name))
-        return ret
+        return self._nodes_by_name.get(name)
 
     def set_node_by_name(self, node):
         """Set node by name."""
         self._nodes_by_name[node.name] = node
+        for out_name in node.output:
+            self._nodes_by_name[out_name] = node
 
     def add_initializer(self, tensor):
         """Add tensor to initializers."""
@@ -462,7 +463,7 @@ class Graph(object):
         top = space == ""
         if num == 0:
             return []
-        val.append("{}{} {} {}".format(space, node.type, node.name, self.get_shape(node.name + ":0")))
+        val.append("{}{} {} {}".format(space, node.type, node.name, self.get_shape(utils.output_name(node.name, 0))))
         space += "    "
         for j in node.inputs:
             val.extend(self.follow_inputs(j, num - 1, space))
@@ -501,7 +502,7 @@ class Graph(object):
         """
         if name is None:
             name = utils.make_name(node.name)
-        new_output = name + ":0"
+        new_output = utils.output_name(name, 0)
         new_node = Node(helper.make_node(op_type, [input_name], [new_output], name=name, **kwargs), self)
         for i, n in enumerate(node.input):
             if n == input_name:
@@ -521,15 +522,17 @@ class Graph(object):
             node that was inserted
         """
         assert isinstance(output_name, str) and isinstance(op_type, str)
-        new_output = name + ":0"
+        new_output = utils.output_name(name, 0)
         new_node = Node(helper.make_node(op_type, [output_name], [new_output], name=name, **kwargs), self)
         self.replace_all_inputs(self.get_nodes(), output_name, new_output)
         return new_node
 
-    def find_output_consumers(self, output_name):
+    def find_output_consumers(self, output_name, ops=None):
         """Find all nodes consuming a given output."""
+        if ops is None:
+            ops = self.get_nodes()
         nodes = []
-        for node in self.get_nodes():
+        for node in ops:
             if output_name in node.input:
                 nodes.append(node)
         return nodes
@@ -564,7 +567,7 @@ class Graph(object):
                 for child in ops:
                     for i, name in enumerate(child.input):
                         if name == output_name:
-                            child.input[i] = no.name + ":0"
+                            child.input[i] = utils.output_name(no.name, 0)
 
         # delete nodes no longer used
         removed = set()

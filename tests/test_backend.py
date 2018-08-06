@@ -24,6 +24,10 @@ TMPPATH = tempfile.mkdtemp()
 # to change the behavior of annotation. If need, pick the backend here.
 OPSET = 7
 
+# onnx allows C stype names only which clashes with tensorflow scopes and output names.
+# USE_ONNX_NAMES True will rewrite names to enforce onnx names, False will keep tensorflow names.
+USE_ONNX_NAMES = False
+
 BACKEND = "caffe2"
 # BACKEND = "onnxmsrt"
 # BACKEND = "onnxmsrtnext"
@@ -38,12 +42,22 @@ _KERNEL3x3 = [3, 3, 1, 1]
 
 # names for input and outputs for tests
 _TFINPUT = "input"
-_INPUT = "input:0"
 _TFINPUT1 = "input1"
-_INPUT1 = "input1:0"
+_TFINPUT2 = "input2"
 _TFOUTPUT = "output"
-_OUTPUT = "output:0"
-_OUTPUT1 = "output1:0"
+
+if USE_ONNX_NAMES:
+    _INPUT = "input__0"
+    _INPUT1 = "input1__0"
+    _INPUT2 = "input2__0"
+    _OUTPUT = "output__0"
+    _OUTPUT1 = "output1__0"
+else:
+    _INPUT = "input:0"
+    _INPUT1 = "input1:0"
+    _INPUT2 = "input2:0"
+    _OUTPUT = "output:0"
+    _OUTPUT1 = "output1:0"
 
 
 # pylint: disable=C0111
@@ -194,7 +208,7 @@ class Tf2OnnxBackendTests(unittest.TestCase):
     def _run(self, output, tf_dict, onnx_dict):
         with tf.Session() as sess:
             expected = sess.run(output, feed_dict=tf_dict)
-            g = process_tf_graph(sess.graph)
+            g = process_tf_graph(sess.graph, use_onnx_names=USE_ONNX_NAMES)
             actual = self._run_backend(g, self._args1, onnx_dict, expected)
         return actual, expected
 
@@ -676,11 +690,11 @@ class Tf2OnnxBackendTests(unittest.TestCase):
         x_val3 = np.array([[13, 14, 15], [16, 17, 18]], dtype=np.float32)
         x1 = tf.placeholder(tf.float32, x_val1.shape, name=_TFINPUT)
         x2 = tf.placeholder(tf.float32, x_val2.shape, name=_TFINPUT1)
-        x3 = tf.placeholder(tf.float32, x_val3.shape, name="input3")
+        x3 = tf.placeholder(tf.float32, x_val3.shape, name=_TFINPUT2)
         x_ = tf.concat([x1, x2, x3], 0)
         output = tf.identity(x_, name=_TFOUTPUT)
         actual, expected = self._run(output, {x1: x_val1, x2: x_val2, x3: x_val3},
-                                     {_INPUT: x_val1, _INPUT1: x_val2, "input3:0": x_val3})
+                                     {_INPUT: x_val1, _INPUT1: x_val2, _INPUT2: x_val3})
         self.assertAllClose(expected, actual)
 
     def test_pow(self):

@@ -64,14 +64,16 @@ def tensorflow_to_onnx(graph, shape_override):
                     shape = out.get_shape().as_list()
                 except Exception as ex:
                     shape = []
-            dtypes[out.name] = utils.map_tf_dtype(out.dtype)
-            output_shapes[out.name] = shape
+            name = utils.name_to_onnx(out.name)
+            dtypes[name] = utils.map_tf_dtype(out.dtype)
+            output_shapes[name] = shape
 
     # minimal conversion of attributes
     for node in ops:
         attr = {}
         takeit = True
         op_cnt[node.type] += 1
+        node_name = utils.name_to_onnx(node.name)
         for a in node.node_def.attr:
             attr_cnt[a] += 1
             if a == "dtype":
@@ -80,7 +82,7 @@ def tensorflow_to_onnx(graph, shape_override):
                 dtype = node.get_attr("T")
                 if dtype:
                     if not isinstance(dtype, list):
-                        dtypes[node.name] = utils.map_tf_dtype(dtype)
+                        dtypes[node_name] = utils.map_tf_dtype(dtype)
             elif a in ["output_type", "output_dtype", "out_type"]:
                 attr[a] = utils.map_tf_dtype(node.get_attr(a))
             elif a == "shape":
@@ -90,7 +92,7 @@ def tensorflow_to_onnx(graph, shape_override):
             elif a == "_output_shapes":
                 attr[a] = utils.get_shape(node)
             elif a == "value":
-                onnx_tensor = utils.tf_to_onnx_tensor(node.get_attr(a), name=node.name + ":0")
+                onnx_tensor = utils.tf_to_onnx_tensor(node.get_attr(a), name=utils.output_name(node_name, 0))
                 attr[a] = onnx_tensor
             elif a == "DstT":
                 attr["to"] = utils.map_tf_dtype(node.get_attr("DstT"))
@@ -103,9 +105,9 @@ def tensorflow_to_onnx(graph, shape_override):
 
         if takeit:
             try:
-                input_names = [i.name for i in node.inputs]
-                output_names = [i.name for i in node.outputs]
-                onnx_node = helper.make_node(node.type, input_names, output_names, name=node.name, **attr)
+                input_names = [utils.name_to_onnx(i.name) for i in node.inputs]
+                output_names = [utils.name_to_onnx(i.name) for i in node.outputs]
+                onnx_node = helper.make_node(node.type, input_names, output_names, name=node_name, **attr)
                 onnx_nodes.append(onnx_node)
             except Exception as ex:
                 log.error("pass1 convert failed for %s, ex=%s", node, ex)
@@ -899,8 +901,8 @@ def topk_op(ctx, node, name, args):
     node.type = "TopK"
     ctx.remove_input(node, node.input[1])
 
-    # the second of TopK operator must be INT64 per ONNX requires. 
-    ctx.set_dtype(name + ":1", onnx_pb.TensorProto.INT64)
+    # the second of TopK operator must be INT64 per ONNX requires.
+    ctx.set_dtype(utils.output_name(name, 1), onnx_pb.TensorProto.INT64)
     return node
 
 
@@ -934,7 +936,7 @@ def minmax_op(ctx, node, name, args):
             zero_name = utils.make_name(input_node.name)
             ctx.make_const(zero_name, "Const", np.zeros(shapeo, dtype=utils.ONNX_TO_NUMPY_DTYPE[dtype]))
             op_name = utils.make_name(input_node.name)
-            output_name = op_name + ":0"
+            output_name = utils.output_name(op_name, 0)
             add_node = Node(helper.make_node("Add", [input_node.output[0], zero_name],
                                              [output_name], name=op_name), ctx)
             node.input[i] = output_name
@@ -952,14 +954,14 @@ def pack_op(ctx, node, name, args):
     # insert Unsqueeze on each input
     for i, n in enumerate(node.inputs):
         op_name = utils.make_name(node.name)
-        output_name = op_name + ":0"
+        output_name = utils.output_name(op_name, 0)
         new_node = Node(helper.make_node("Unsqueeze", [node.input[i]], [output_name], name=op_name, axes=[axis]), ctx)
         node.input[i] = output_name
         nodes.append(new_node)
         inputs.append(output_name)
     # concat all unqueezes
     op_name = utils.make_name(node.name)
-    output_name = op_name + ":0"
+    output_name = utils.output_name(op_name, 0)
     concat = Node(helper.make_node("Concat", inputs, [output_name], name=op_name, axis=axis), ctx)
     ctx.copy_shape(node.output[0], concat.output[0])
     ctx.replace_all_inputs(ctx.get_nodes(), node.output[0], output_name)
@@ -975,7 +977,7 @@ def unpack_op(ctx, node, name, args):
     # for each output we need to squeeze axis
     for i, n in enumerate(node.output):
         op_name = utils.make_name(node.name)
-        output_name = op_name + ":" + str(i)
+        output_name = utils.output_name(op_name, i)
         new_node = Node(helper.make_node("Squeeze", [n], [output_name], name=op_name, axes=[axis]), ctx)
         nodes.append(new_node)
         ctx.copy_shape(n, output_name)
@@ -1204,12 +1206,11 @@ def rewrite_random_uniform(g, ops):
         shape = g.get_shape(output.output[0])
         dtype = output.dtype
         op_name = utils.make_name("RandomUniform")
-        out_name = op_name + ":0"
+        out_name = utils.output_name(op_name, 0)
         new_node = Node(helper.make_node("RandomUniform", [], [out_name],
                                          name=op_name, low=tmin, high=tmax,
                                          dtype=dtype, shape=shape), g)
         ops = g.replace_subgraph(ops, match, [], [output], [], [new_node])
-
     return ops
 
 
@@ -1252,12 +1253,11 @@ def rewrite_random_normal(g, ops):
         shape = g.get_shape(output.output[0])
         dtype = output.dtype
         op_name = utils.make_name("RandomNormal")
-        out_name = op_name + ":0"
+        out_name = utils.output_name(op_name, 0)
         new_node = Node(helper.make_node("RandomNormal", [], [out_name],
                                          name=op_name, shape=shape, mean=mean, scale=1.0,
                                          dtype=dtype), g)
         ops = g.replace_subgraph(ops, match, [], [output], [], [new_node])
-
     return ops
 
 
@@ -1278,7 +1278,7 @@ def rewrite_dropout(g, ops):
         inputs2 = match.get_op('input2')
         outputs = match.get_op('outputs')
         op_name = utils.make_name("Dropout")
-        out_name = op_name + ":0"
+        out_name = utils.output_name(op_name, 0)
         new_node = Node(helper.make_node("Dropout", [inputs2.input[0]], [out_name], name=op_name, ratio=1.0), g)
         ops = g.replace_subgraph(ops, match, [inputs2], [outputs], [new_node], [new_node])
 
@@ -1302,7 +1302,7 @@ def rewrite_flatten(g, ops):
         inputs2 = match.get_op('input2')
         outputs = match.get_op('outputs')
         op_name = utils.make_name("Flatten")
-        out_name = op_name + ":0"
+        out_name = utils.output_name(op_name, 0)
         new_node = Node(helper.make_node("Flatten", [inputs2.output[0]], [out_name], name=op_name), g)
         g.replace_all_inputs(ops, outputs.output[0], out_name)
         to_be_removed = [node for node in match.get_nodes() if node != inputs2]
@@ -1381,7 +1381,7 @@ def tf_optimize(sess, inputs, outputs, graph_def):
 
 def process_tf_graph(tf_graph, continue_on_error=False, verbose=False, target=None,
                      opset=None, custom_op_handlers=None, custom_rewriter=None,
-                     extra_opset=None, shape_override=None):
+                     extra_opset=None, shape_override=None, use_onnx_names=False):
     """Convert tensorflow graph to onnx graph.
         Args:
             tf_graph: tensorflow graph
@@ -1408,6 +1408,9 @@ def process_tf_graph(tf_graph, continue_on_error=False, verbose=False, target=No
         shape_override = {}
     if target is None:
         target = DEFAULT_TARGET
+
+    if use_onnx_names:
+        utils.USE_ONNX_NAMES = True
 
     onnx_nodes, op_cnt, attr_cnt, output_shapes, dtypes = tensorflow_to_onnx(tf_graph, shape_override)
 

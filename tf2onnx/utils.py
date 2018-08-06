@@ -69,6 +69,8 @@ ONNX_DTYPE_NAMES = {
 
 ONNX_UNKNOWN_DIMENSION = -1
 
+USE_ONNX_NAMES = False
+
 #
 # attributes onnx understands. Everything else coming from tensorflow
 # will be ignored.
@@ -93,7 +95,7 @@ def make_name(name):
     """Make op name for inserted ops."""
     global INTERNAL_NAME
     INTERNAL_NAME += 1
-    return "{}__{}".format(name, INTERNAL_NAME)
+    return "{}___{}".format(name, INTERNAL_NAME)
 
 
 def split_nodename_and_shape(name):
@@ -178,10 +180,21 @@ def map_tf_dtype(dtype):
         dtype = TF_TO_ONNX_DTYPE[dtype]
     return dtype
 
-
 def node_name(name):
     """Get node name without io#."""
     pos = name.find(":")
     if pos >= 0:
         return name[:pos]
+
+def output_name(name, nr):
+    """Name for output nr."""
+    if USE_ONNX_NAMES:
+        return name + "__" + str(nr)
+    return name + ":" + str(nr)
+
+
+def name_to_onnx(name):
+    """Rewrite name to conform to onnx spec."""
+    if USE_ONNX_NAMES:
+        return name.replace("/", "__").replace(":", "__")
     return name

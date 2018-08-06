@@ -35,6 +35,7 @@ def get_args():
     parser.add_argument("--target", default=",".join(DEFAULT_TARGET), help="target platform")
     parser.add_argument("--continue_on_error", help="continue_on_error", action="store_true")
     parser.add_argument("--verbose", help="verbose output", action="store_true")
+    parser.add_argument("--use-onnx-names", help="use onnx c-style names", action="store_true")
     args = parser.parse_args()
 
     args.shape_override = None
@@ -88,7 +89,8 @@ def main():
                              opset=args.opset,
                              custom_op_handlers=custom_ops,
                              extra_opset=extra_opset,
-                             shape_override=args.shape_override)
+                             shape_override=args.shape_override,
+                             use_onnx_names=args.use_onnx_names)
 
     model_proto = g.make_model(
         "converted from {}".format(args.input), args.inputs, args.outputs,

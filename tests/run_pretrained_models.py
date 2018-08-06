@@ -25,6 +25,11 @@ from tensorflow.python.framework.graph_util import convert_variables_to_constant
 TMPPATH = tempfile.mkdtemp()
 PERFITER = 1000
 
+# onnx allows C stype names only which clashes with tensorflow scopes and output names.
+# USE_ONNX_NAMES True will rewrite names to enforce onnx names, False will keep tensorflow names.
+USE_ONNX_NAMES = False
+
+
 
 def get_beach(inputs):
     """Get beach image as input."""
@@ -70,15 +75,6 @@ _INPUT_FUNC_MAPPING = {
     "get_random256": get_random256,
     "get_ramp": get_ramp
 }
-
-
-def node_name(name):
-    """Get node name without io#."""
-    assert isinstance(name, str)
-    pos = name.find(":")
-    if pos >= 0:
-        return name[:pos]
-    return name
 
 
 def freeze_session(sess, keep_var_names=None, output_names=None, clear_devices=True):
@@ -157,29 +153,33 @@ class Test(object):
                 zip_ref.close()
         return fpath, dir_name
 
-    def run_tensorflow(self, sess, inputs):
+    def run_tensorflow(self, sess, inputs, outputs):
         """Run model on tensorflow so we have a referecne output."""
         feed_dict = {}
         for k, v in inputs.items():
             k = sess.graph.get_tensor_by_name(k)
             feed_dict[k] = v
-        result = sess.run(self.output_names, feed_dict=feed_dict)
+        result = sess.run(outputs, feed_dict=feed_dict)
         if self.perf:
             start = time.time()
             for _ in range(PERFITER):
-                _ = sess.run(self.output_names, feed_dict=feed_dict)
+                _ = sess.run(outputs, feed_dict=feed_dict)
             self.tf_runtime = time.time() - start
         return result
 
     @staticmethod
     def to_onnx(tf_graph, opset=None, shape_override=None):
         """Convert graph to tensorflow."""
-        return process_tf_graph(tf_graph, continue_on_error=False, opset=opset, shape_override=shape_override)
+        return process_tf_graph(tf_graph,
+                                continue_on_error=False,
+                                opset=opset,
+                                shape_override=shape_override,
+                                use_onnx_names=USE_ONNX_NAMES)
 
-    def run_caffe2(self, name, onnx_graph, inputs):
+    def run_caffe2(self, name, onnx_graph, inputs, outputs):
         """Run test again caffe2 backend."""
         import caffe2.python.onnx.backend
-        model_proto = onnx_graph.make_model("test", inputs.keys(), self.output_names)
+        model_proto = onnx_graph.make_model("test", inputs.keys(), outputs)
         prepared_backend = caffe2.python.onnx.backend.prepare(model_proto)
         results = prepared_backend.run(inputs)
         if self.perf:
@@ -189,63 +189,43 @@ class Test(object):
             self.onnx_runtime = time.time() - start
         return results
 
-    def run_onnxmsrt(self, name, onnx_graph, inputs):
+    def run_onnxmsrt(self, name, onnx_graph, inputs, outputs):
         """Run test against onnxmsrt backend."""
         import lotus
         # create model and datafile in tmp path.
         model_path = os.path.join(TMPPATH, name + "_model.pb")
-        model_proto = onnx_graph.make_model("test", inputs.keys(), self.output_names)
+        model_proto = onnx_graph.make_model("test", inputs.keys(), outputs)
         with open(model_path, "wb") as f:
             f.write(model_proto.SerializeToString())
         m = lotus.ModelExecutor(model_path)
-        results = m.run(self.output_names, inputs)
+        results = m.run(outputs, inputs)
         if self.perf:
             start = time.time()
             for _ in range(PERFITER):
-                _ = m.run(self.output_names, inputs)
+                _ = m.run(outputs, inputs)
             self.onnx_runtime = time.time() - start
         return results
 
-    def run_onnxmsrtnext(self, name, onnx_graph, inputs):
+    def run_onnxmsrtnext(self, name, onnx_graph, inputs, outputs):
         """Run test against msrt-next backend."""
         import lotus
         model_path = os.path.join(TMPPATH, name + ".pb")
-        model_proto = onnx_graph.make_model("test", inputs.keys(), self.output_names)
+        model_proto = onnx_graph.make_model("test", inputs.keys(), outputs)
         with open(model_path, "wb") as f:
             f.write(model_proto.SerializeToString())
         m = lotus.InferenceSession(model_path)
-        results = m.run(self.output_names, inputs)
+        results = m.run(outputs, inputs)
         if self.perf:
             start = time.time()
             for _ in range(PERFITER):
-                _ = m.run(self.output_names, inputs)
+                _ = m.run(outputs, inputs)
             self.onnx_runtime = time.time() - start
         return results
 
-    def run_onnxcntk(self, name, onnx_graph, inputs):
-        """Run test against cntk backend."""
-        import cntk as C
-        model_path = os.path.join(TMPPATH, name + "_model.pb")
-        model_proto = onnx_graph.make_model("test", inputs.keys(), self.output_names)
-        with open(model_path, "wb") as f:
-            f.write(model_proto.SerializeToString())
-        z = C.Function.load(model_path, format=C.ModelFormat.ONNX)
-        input_args = {}
-        # FIXME: the model loads but eval() throws
-        for arg in z.arguments:
-            input_args[arg] = inputs[arg.name]
-        results = z.eval(input_args)
-        if self.perf:
-            start = time.time()
-            for _ in range(PERFITER):
-                _ = z.eval(input_args)
-            self.onnx_runtime = time.time() - start
-        return results
-
-    def create_onnx_file(self, name, onnx_graph, inputs, outdir):
+    def create_onnx_file(self, name, onnx_graph, inputs, outputs, outdir):
         os.makedirs(outdir, exist_ok=True)
         model_path = os.path.join(outdir, name + ".onnx")
-        model_proto = onnx_graph.make_model(name, inputs.keys(), self.output_names)
+        model_proto = onnx_graph.make_model(name, inputs.keys(), outputs)
         with open(model_path, "wb") as f:
             f.write(model_proto.SerializeToString())
         print("\tcreated", model_path)
@@ -278,12 +258,14 @@ class Test(object):
         if self.more_inputs:
             for k, v in self.more_inputs.items():
                 inputs[k] = v
+        outputs = self.output_names
+
         tf.reset_default_graph()
         graph_def = graph_pb2.GraphDef()
         with open(model_path, "rb") as f:
             graph_def.ParseFromString(f.read())
 
-        graph_def = tf2onnx.tfonnx.tf_optimize(None, inputs, self.output_names, graph_def)
+        graph_def = tf2onnx.tfonnx.tf_optimize(None, inputs, outputs, graph_def)
         shape_override = {}
         g = tf.import_graph_def(graph_def, name='')
         with tf.Session(graph=g) as sess:
@@ -299,9 +281,13 @@ class Test(object):
                 shape_override = self.input_names
 
             # run the model with tensorflow
-            tf_results = self.run_tensorflow(sess, inputs)
+            tf_results = self.run_tensorflow(sess, inputs, self.output_names)
             onnx_graph = None
             print("\ttensorflow", "OK")
+            if USE_ONNX_NAMES:
+                tf2onnx.utils.USE_ONNX_NAMES = USE_ONNX_NAMES
+                inputs = {tf2onnx.utils.name_to_onnx(k): v for k, v in inputs.items()}
+                outputs = [tf2onnx.utils.name_to_onnx(k) for k in outputs]
             try:
                 # convert model to onnx
                 onnx_graph = self.to_onnx(sess.graph, opset=opset, shape_override=shape_override)
@@ -309,20 +295,18 @@ class Test(object):
                 if debug:
                     onnx_graph.dump_graph()
                 if onnx_file:
-                    self.create_onnx_file(name, onnx_graph, inputs, onnx_file)
+                    self.create_onnx_file(name, onnx_graph, inputs, outputs, onnx_file)
             except Exception as ex:
                 print("\tto_onnx", "FAIL", ex)
 
         try:
             onnx_results = None
             if backend == "caffe2":
-                onnx_results = self.run_caffe2(name, onnx_graph, inputs)
+                onnx_results = self.run_caffe2(name, onnx_graph, inputs, outputs)
             elif backend == "onnxmsrt":
-                onnx_results = self.run_onnxmsrt(name, onnx_graph, inputs)
+                onnx_results = self.run_onnxmsrt(name, onnx_graph, inputs, outputs)
             elif backend == "onnxmsrtnext":
-                onnx_results = self.run_onnxmsrtnext(name, onnx_graph, inputs)
-            elif backend == "cntk":
-                onnx_results = self.run_onnxcntk(name, onnx_graph, inputs)
+                onnx_results = self.run_onnxmsrtnext(name, onnx_graph, inputs, outputs)
             else:
                 raise ValueError("unknown backend")
             print("\trun_onnx OK")
