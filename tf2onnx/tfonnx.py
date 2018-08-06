@@ -31,7 +31,7 @@ log = logging.getLogger("tf2onnx")
 TARGET_RS4 = "rs4"
 TARGET_CAFFE2 = "caffe2"
 POSSIBLE_TARGETS = [TARGET_RS4, TARGET_CAFFE2]
-DEFAULT_TARGET = [TARGET_RS4, TARGET_CAFFE2]
+DEFAULT_TARGET = []
 
 
 def tensorflow_to_onnx(graph, shape_override):
